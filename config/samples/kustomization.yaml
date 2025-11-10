@@ -1,0 +1,4 @@
+## Append samples of your project ##
+resources:
+- node-swap_v1alpha1_nodeswap.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

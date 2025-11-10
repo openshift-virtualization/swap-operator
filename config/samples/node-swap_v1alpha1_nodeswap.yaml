@@ -1,0 +1,9 @@
+apiVersion: node-swap.openshift.io/v1alpha1
+kind: NodeSwap
+metadata:
+  labels:
+    app.kubernetes.io/name: swap-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: nodeswap-sample
+spec:
+  # TODO(user): Add fields here
