@@ -1,0 +1,10 @@
+mode: 0420
+overwrite: true
+path: "/etc/openshift/kubelet.conf.d/90-swap.conf"
+contents:
+  inline: |
+    apiVersion: kubelet.config.k8s.io/v1beta1
+    kind: KubeletConfiguration
+    failSwapOn: false
+    memorySwap:
+      swapBehavior: LimitedSwap

@@ -1,0 +1,13 @@
+name: system-slice-swap-disable.service
+enabled: true
+contents: |
+  [Unit]
+  Description=Restrict swap for system slice
+  ConditionFirstBoot=no
+
+  [Service]
+  Type=oneshot
+  ExecStart=/bin/sh -c "sudo systemctl set-property --runtime system.slice MemorySwapMax=0 IODeviceLatencyTargetSec=\"/ 50ms\""
+
+  [Install]
+  RequiredBy=kubelet-dependencies.target

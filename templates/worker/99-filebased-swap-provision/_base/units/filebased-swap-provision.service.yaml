@@ -1,0 +1,20 @@
+{{- if .EnableFileBasedSwap }}
+name: filbased-swap-provision.service
+enabled: true
+contents: |
+  [Unit]
+  Description=Provision and enable swap
+  ConditionFirstBoot=no
+  ConditionPathExists=!/var/tmp/swapfile
+  
+  [Service]
+  Type=oneshot
+  Environment=SWAP_SIZE_MB={{ .SwapFileSize }}
+  ExecStart=/bin/sh -c "sudo fallocate -l ${SWAP_SIZE_MB}M /var/tmp/swapfile && \
+  sudo chmod 600 {{ .SwapFilePath }} && \
+  sudo mkswap {{ .SwapFilePath }} && \
+  sudo swapon {{ .SwapFilePath }}"
+  
+  [Install]
+  RequiredBy=kubelet-dependencies.target
+{{- end}}
