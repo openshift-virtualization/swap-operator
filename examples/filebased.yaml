@@ -1,0 +1,14 @@
+apiVersion: node-swap.openshift.io/v1alpha1
+kind: NodeSwap
+metadata:
+  name: swap
+  namespace: default
+spec:
+  machineConfigPoolSelector: "node-role.kubernetes.io/role:worker"
+  swaps:
+    - priority: 10
+      swapType: file
+      file:
+        path: /var/swap
+        size: 4Gi
+  logLevel: 4

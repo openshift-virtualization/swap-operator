@@ -21,19 +21,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-type KubeSwapMode string
-
-const (
-	KubeSwapLimited   KubeSwapMode = "Limited"
-	KubeSwapUnlimited KubeSwapMode = "Unlimited"
-)
-
-// KubeletConfig defines swap related configuration for kubelet
-type KubeletConfig struct {
-	// +kubebuilder:validation:Type=string
-	SwapMode KubeSwapMode `json:"swapMode,omitempty"`
-}
-
 type SwapType string
 
 const (
@@ -82,13 +69,9 @@ type NodeSwapSpec struct {
 	// More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
 
 	// Label selector for Machines on which swap will be deployed.
-	NodeSelector *metav1.LabelSelector `json:"nodeSelector,omitempty"`
+	MachineConfigPoolSelector string `json:"machineConfigPoolSelector,omitempty"`
 
 	Swaps Swaps `json:"swaps,omitempty"`
-
-	// +optional
-	KubeletConfig *KubeletConfig `json:"kubeletConfig,omitempty"`
-
 	// +optional
 	LogLevel *int32 `json:"logLevel,omitempty"`
 }

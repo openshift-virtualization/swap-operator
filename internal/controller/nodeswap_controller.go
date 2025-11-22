@@ -18,28 +18,52 @@ package controller
 
 import (
 	"context"
+	"encoding/base64"
+	"fmt"
+	"path/filepath"
+	"strings"
 
-	ign3types "github.com/coreos/ignition/v2/config/v3_2/types"
 	mcfgv1 "github.com/openshift/api/machineconfiguration/v1"
+	"go.yaml.in/yaml/v2"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	nodeswapv1alpha1 "github.com/openshift-virtualization/swap-operator/api/v1alpha1"
+	nodeswap "github.com/openshift-virtualization/swap-operator/api/v1alpha1"
+	"github.com/openshift-virtualization/swap-operator/internal/renderconfig"
+	"github.com/openshift-virtualization/swap-operator/internal/template"
 )
 
-// NodeSwapReconciler reconciles a NodeSwap object
+const (
+	typeAvailableNodeSwap   = "Availabe"
+	typeProgressingNodeSwap = "Progressing"
+	typeDegradedNodeSwap    = "Degraded"
+)
+
 type NodeSwapReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme          *runtime.Scheme
+	TemplateDir     string
+	config          []renderconfig.RenderConfig
+	ctx             context.Context
+	desiredNodeSwap nodeswap.NodeSwap
+	mcpReady        bool
 }
 
 // +kubebuilder:rbac:groups=node-swap.openshift.io,resources=nodeswaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=node-swap.openshift.io,resources=nodeswaps/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=node-swap.openshift.io,resources=nodeswaps/finalizers,verbs=update
+// +kubebuilder:rbac:groups=machineconfiguration.openshift.io,resources=machineconfigs,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=machineconfiguration.openshift.io,resources=machineconfigs/status,verbs=get;list;watch
+// +kubebuilder:rbac:groups=machineconfiguration.openshift.io,resources=machineconfigpools,verbs=get;list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -52,121 +76,253 @@ type NodeSwapReconciler struct {
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.22.1/pkg/reconcile
 func (r *NodeSwapReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	_ = logf.FromContext(ctx)
+	r.ctx = ctx
 
-	// TODO(user): your logic here
-	//RednerMachineConfigFromAPI
-	//ReconcileRenderedMachineConfigWithCurrentMachineConfig
-	//UpdateMachineConfig
-	//UpdateNodeSwapStatus
-	//Requeue
-
-	return ctrl.Result{}, nil
-}
-
-// GenerateSwapMachineConfig creates a MachineConfig object for enabling swap on worker nodes
-func GenerateSwapMachineConfig(name, role string, swapSizeMB int) *mcfgv1.MachineConfig {
-	// Base64 encoded kubelet configuration for swap
-	// Content: apiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\nmemorySwap:\n  swapBehavior: LimitedSwap\n
-	kubeletConfigSource := "data:text/plain;charset=utf-8;base64,YXBpVmVyc2lvbjoga3ViZWxldC5jb25maWcuazhzLmlvL3YxYmV0YTEKa2luZDogS3ViZWxldENvbmZpZ3VyYXRpb24KbWVtb3J5U3dhcDoKICBzd2FwQmVoYXZpb3I6IExpbWl0ZWRTd2FwCg=="
-
-	// Swap provision service unit content
-	swapProvisionUnit := `[Unit]
-Description=Provision and enable swap
-ConditionFirstBoot=no
-ConditionPathExists=!/var/tmp/swapfile
-
-[Service]
-Type=oneshot
-Environment=SWAP_SIZE_MB=` + string(rune(swapSizeMB)) + `
-ExecStart=/bin/sh -c "sudo fallocate -l ${SWAP_SIZE_MB}M /var/tmp/swapfile && \
-sudo chmod 600 /var/tmp/swapfile && \
-sudo mkswap /var/tmp/swapfile && \
-sudo swapon /var/tmp/swapfile && \
-free -h"
-
-[Install]
-RequiredBy=kubelet-dependencies.target
-`
-
-	// System slice cgroup configuration service unit content
-	cgroupSystemSliceUnit := `[Unit]
-Description=Restrict swap for system slice
-ConditionFirstBoot=no
-
-[Service]
-Type=oneshot
-ExecStart=/bin/sh -c "sudo systemctl set-property --runtime system.slice MemorySwapMax=0 IODeviceLatencyTargetSec=\"/ 50ms\""
-
-[Install]
-RequiredBy=kubelet-dependencies.target
-`
-
-	// Create the file mode (420 in decimal = 0644 in octal)
-	fileMode := 420
-
-	// Create the MachineConfig object
-	mc := &mcfgv1.MachineConfig{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: "machineconfiguration.openshift.io/v1",
-			Kind:       "MachineConfig",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name: name,
-			Labels: map[string]string{
-				"machineconfiguration.openshift.io/role": role,
-			},
-		},
-		Spec: mcfgv1.MachineConfigSpec{
-			Config: ign3types.Config{
-				Ignition: ign3types.Ignition{
-					Version: "3.2.0",
-				},
-				Storage: ign3types.Storage{
-					Files: []ign3types.File{
-						{
-							Node: ign3types.Node{
-								Path:      "/etc/openshift/kubelet.conf.d/90-swap.conf",
-								Overwrite: boolPtr(true),
-							},
-							FileEmbedded1: ign3types.FileEmbedded1{
-								Mode: &fileMode,
-								Contents: ign3types.Resource{
-									Source: &kubeletConfigSource,
-								},
-							},
-						},
-					},
-				},
-				Systemd: ign3types.Systemd{
-					Units: []ign3types.Unit{
-						{
-							Name:     "swap-provision.service",
-							Enabled:  boolPtr(true),
-							Contents: &swapProvisionUnit,
-						},
-						{
-							Name:     "cgroup-system-slice-config.service",
-							Enabled:  boolPtr(true),
-							Contents: &cgroupSystemSliceUnit,
-						},
-					},
-				},
-			},
-		},
+	if err := r.Get(ctx, req.NamespacedName, &r.desiredNodeSwap); err != nil {
+		if apierrors.IsNotFound(err) {
+			logf.FromContext(ctx).Info("NodeSwap resource not found. Ignoring since object must be deleted")
+			return ctrl.Result{}, nil
+		}
+		logf.FromContext(ctx).Error(err, "Failed to get NodeSwap")
+		return ctrl.Result{}, err
 	}
 
-	return mc
+	// Reconcile the spec and capture any errors
+	_, reconcileErr := r.ReconcileSpec()
+
+	// Always update status with the result (success or failure)
+	if _, statusErr := r.ReconcileStatus(reconcileErr); statusErr != nil {
+		logf.FromContext(ctx).Error(statusErr, "Failed to update status")
+		// Return both errors if status update fails
+		if reconcileErr != nil {
+			return ctrl.Result{}, fmt.Errorf("reconcile error: %v, status update error: %v", reconcileErr, statusErr)
+		}
+		return ctrl.Result{}, statusErr
+	}
+
+	// Return the original reconcile error (status was updated successfully)
+	return ctrl.Result{}, reconcileErr
 }
 
-// boolPtr returns a pointer to a bool value
-func boolPtr(b bool) *bool {
-	return &b
+func (r *NodeSwapReconciler) ReconcileStatus(reconcileErr error) (ctrl.Result, error) {
+	if reconcileErr != nil {
+		meta.SetStatusCondition(&r.desiredNodeSwap.Status.Conditions, metav1.Condition{
+			Type:    typeDegradedNodeSwap,
+			Status:  metav1.ConditionTrue,
+			Reason:  "ReconciliationFailed",
+			Message: fmt.Sprintf("Failed to reconcile: %v", reconcileErr),
+		})
+		meta.SetStatusCondition(&r.desiredNodeSwap.Status.Conditions, metav1.Condition{
+			Type:    typeProgressingNodeSwap,
+			Status:  metav1.ConditionFalse,
+			Reason:  "ReconciliationFailed",
+			Message: "Reconciliation failed",
+		})
+		meta.SetStatusCondition(&r.desiredNodeSwap.Status.Conditions, metav1.Condition{
+			Type:    typeAvailableNodeSwap,
+			Status:  metav1.ConditionFalse,
+			Reason:  "ReconciliationFailed",
+			Message: "",
+		})
+	} else if len(r.desiredNodeSwap.Status.Conditions) == 0 {
+		meta.SetStatusCondition(&r.desiredNodeSwap.Status.Conditions, metav1.Condition{
+			Type:    typeProgressingNodeSwap,
+			Status:  metav1.ConditionTrue,
+			Reason:  "Reconciling",
+			Message: "NodeSwap is reconciling",
+		})
+	} else {
+		meta.SetStatusCondition(&r.desiredNodeSwap.Status.Conditions, metav1.Condition{
+			Type:    typeAvailableNodeSwap,
+			Status:  metav1.ConditionTrue,
+			Reason:  "ReconciliationSucceeded",
+			Message: "NodeSwap successfully reconciled",
+		})
+		meta.SetStatusCondition(&r.desiredNodeSwap.Status.Conditions, metav1.Condition{
+			Type:    typeDegradedNodeSwap,
+			Status:  metav1.ConditionFalse,
+			Reason:  "ReconciliationSucceeded",
+			Message: "",
+		})
+		meta.SetStatusCondition(&r.desiredNodeSwap.Status.Conditions, metav1.Condition{
+			Type:    typeProgressingNodeSwap,
+			Status:  metav1.ConditionFalse,
+			Reason:  "ReconciliationSucceeded",
+			Message: "",
+		})
+	}
+
+	if err := r.Status().Update(r.ctx, &r.desiredNodeSwap); err != nil {
+		logf.FromContext(r.ctx).Error(err, "Failed to update NodeSwap status")
+		return ctrl.Result{}, err
+	}
+
+	return ctrl.Result{}, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *NodeSwapReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&nodeswapv1alpha1.NodeSwap{}).
+		For(&nodeswap.NodeSwap{}).
+		Watches(&mcfgv1.MachineConfigPool{}, &handler.EnqueueRequestForObject{}).
+		Owns(&mcfgv1.MachineConfig{}).
 		Named("nodeswap").
 		Complete(r)
+}
+
+func (r *NodeSwapReconciler) ReconcileKubeletCgroups() (ctrl.Result, error) {
+	var kubeletMachineConfig mcfgv1.MachineConfig
+	if err := r.Get(r.ctx,
+		types.NamespacedName{Name: renderconfig.SwapKubeletCgroupsMCPrefix},
+		&kubeletMachineConfig); err != nil {
+		if apierrors.IsNotFound(err) {
+			fullTemplatePath := filepath.Join(r.TemplateDir, "worker", "99-swap-kubelet-cgroups")
+			mc, err := template.GenerateMachineConfigForName(
+				&renderconfig.RenderConfig{},
+				"worker",
+				"99-swap-kubelet-cgroups",
+				r.TemplateDir,
+				fullTemplatePath,
+			)
+			if err != nil {
+				logf.FromContext(r.ctx).Error(err, "Failed to render kubelet machine config")
+				return ctrl.Result{}, err
+			}
+
+			mcBytes, err := yaml.Marshal(mc)
+			if err != nil {
+				logf.FromContext(r.ctx).Error(err, "Failed to marshal MachineConfig")
+			} else {
+				mcBase64 := base64.StdEncoding.EncodeToString(mcBytes)
+				logf.FromContext(r.ctx).Info("Generated MachineConfig", "base64", mcBase64)
+			}
+
+			if mc.ObjectMeta.Labels == nil {
+				mc.ObjectMeta.Labels = map[string]string{}
+			}
+
+			key, value, err := parseLabelSelector(r.desiredNodeSwap.Spec.MachineConfigPoolSelector)
+			if err != nil {
+				logf.FromContext(r.ctx).Error(err, "Failed to parse label selector")
+				return ctrl.Result{}, err
+			}
+			mc.ObjectMeta.Labels[key] = value
+
+			if err := r.Create(r.ctx, mc); errors.IsAlreadyExists(err) {
+				logf.FromContext(r.ctx).Info("Kubelet machine config already exists")
+				return ctrl.Result{}, nil
+			} else if err != nil {
+				logf.FromContext(r.ctx).Error(err, "Failed to create kubelet machine config")
+				return ctrl.Result{}, err
+			}
+
+			return ctrl.Result{}, nil
+		}
+		logf.FromContext(r.ctx).Error(err, "Failed to get kubelet machine config")
+		return ctrl.Result{}, err
+	}
+
+	return ctrl.Result{}, nil
+}
+
+func (r *NodeSwapReconciler) ReconcileSpec() (ctrl.Result, error) {
+	config, err := renderconfig.Create(&r.desiredNodeSwap.Spec)
+	if err != nil {
+		logf.FromContext(r.ctx).Error(err, "Failed to create render config")
+		return ctrl.Result{}, err
+	}
+	r.config = config
+
+	// List all MachineConfigPools
+	mcpList := &mcfgv1.MachineConfigPoolList{}
+	if err := r.List(r.ctx, mcpList); err != nil {
+		logf.FromContext(r.ctx).Error(err, "Failed to list MachineConfigPools")
+		return ctrl.Result{}, err
+	}
+
+	// Parse the desired label selector
+	labelKey, labelValue, err := parseLabelSelector(r.desiredNodeSwap.Spec.MachineConfigPoolSelector)
+	if err != nil {
+		logf.FromContext(r.ctx).Error(err, "Failed to parse label selector")
+		return ctrl.Result{}, err
+	}
+
+	// Filter MachineConfigPools that match the selector
+	var matchingMCPs []*mcfgv1.MachineConfigPool
+	var updatedMCPs, notUpdatedMCPs []*mcfgv1.MachineConfigPool
+
+	for i := range mcpList.Items {
+		mcp := &mcpList.Items[i]
+		if mcp.Spec.MachineConfigSelector != nil &&
+			mcp.Spec.MachineConfigSelector.MatchLabels != nil {
+			if value, exists :=
+				mcp.Spec.MachineConfigSelector.MatchLabels[labelKey]; exists && value == labelValue {
+				matchingMCPs = append(matchingMCPs, mcp)
+
+				if isMachineConfigPoolUpdated(mcp) {
+					updatedMCPs = append(updatedMCPs, mcp)
+					logf.FromContext(r.ctx).Info("MachineConfigPool is updated",
+						"name", mcp.Name)
+				} else {
+					notUpdatedMCPs = append(notUpdatedMCPs, mcp)
+					logf.FromContext(r.ctx).Info("MachineConfigPool is not yet updated",
+						"name", mcp.Name)
+				}
+			}
+		}
+	}
+
+	logf.FromContext(r.ctx).Info("MachineConfigPool filtering complete",
+		"matchingCount", len(matchingMCPs),
+		"updatedCount", len(updatedMCPs),
+		"notUpdatedCount", len(notUpdatedMCPs))
+
+	r.mcpReady = len(notUpdatedMCPs) == 0
+
+	return r.ReconcileKubeletCgroups()
+}
+
+// parseLabelSelector parses a label selector string in the format "key:" or "key:value"
+// and returns the key and value separately. The key is required but the value can be empty.
+func parseLabelSelector(selector string) (string, string, error) {
+	if selector == "" {
+		return "", "", fmt.Errorf("label selector is empty")
+	}
+
+	parts := strings.SplitN(selector, ":", 2)
+	if len(parts) != 2 {
+		return "", "", fmt.Errorf("invalid label selector format: %s, expected key: or key:value", selector)
+	}
+
+	key := strings.TrimSpace(parts[0])
+	value := strings.TrimSpace(parts[1])
+
+	if key == "" {
+		return "", "", fmt.Errorf("label selector has empty key: %s", selector)
+	}
+
+	return key, value, nil
+}
+
+// isMachineConfigPoolUpdated checks if a MachineConfigPool is fully updated.
+// Returns true if the pool's Updated condition is True, and both Updating and Degraded are False.
+func isMachineConfigPoolUpdated(mcp *mcfgv1.MachineConfigPool) bool {
+	var updated, updating, degraded bool
+
+	for _, condition := range mcp.Status.Conditions {
+		switch condition.Type {
+		case mcfgv1.MachineConfigPoolUpdated:
+			updated = condition.Status == corev1.ConditionTrue
+		case mcfgv1.MachineConfigPoolUpdating:
+			updating = condition.Status == corev1.ConditionTrue
+		case mcfgv1.MachineConfigPoolDegraded:
+			degraded = condition.Status == corev1.ConditionTrue
+		}
+	}
+
+	// Pool is considered updated if:
+	// - Updated condition is True
+	// - Updating condition is False (or not found)
+	// - Degraded condition is False (or not found)
+	return updated && !updating && !degraded
 }

@@ -10,28 +10,20 @@ import (
 	"sort"
 	"text/template"
 
-	"github.com/openshift-virtualization/swap-operator/api/v1alpha1"
 	ctrlcommon "github.com/openshift-virtualization/swap-operator/internal/common"
+	"github.com/openshift-virtualization/swap-operator/internal/renderconfig"
 	mcfgv1 "github.com/openshift/api/machineconfiguration/v1"
 	"k8s.io/klog/v2"
 )
 
-type RenderConfig struct {
-	*v1alpha1.NodeSwapSpec
-}
-
 const (
-	filesDir            = "files"
-	unitsDir            = "units"
-	extensionsDir       = "extensions"
-	platformBase        = "_base"
-	platformOnPrem      = "on-prem"
-	sno                 = "sno"
-	tnf                 = "two-node-with-fencing"
-	masterRole          = "master"
-	workerRole          = "worker"
-	arbiterRole         = "arbiter"
-	cloudPlatformAltDNS = "cloud-platform-alt-dns"
+	filesDir      = "files"
+	unitsDir      = "units"
+	extensionsDir = "extensions"
+	platformBase  = "_base"
+	masterRole    = "master"
+	workerRole    = "worker"
+	arbiterRole   = "arbiter"
 )
 
 // generateTemplateMachineConfigs returns MachineConfig objects from the templateDir and a config object
@@ -47,7 +39,7 @@ const (
 //	                     /01-worker-kubelet/_base/files/random.conf.tmpl
 //	              /master/00-master/_base/units/kubelet.tmpl
 //	                                  /files/hostname.tmpl
-func generateTemplateMachineConfigs(config *RenderConfig, templateDir string) ([]*mcfgv1.MachineConfig, error) {
+func generateTemplateMachineConfigs(config *renderconfig.RenderConfig, templateDir string) ([]*mcfgv1.MachineConfig, error) {
 	infos, err := ctrlcommon.ReadDir(templateDir)
 	if err != nil {
 		return nil, err
@@ -73,7 +65,7 @@ func generateTemplateMachineConfigs(config *RenderConfig, templateDir string) ([
 }
 
 // GenerateMachineConfigsForRole creates MachineConfigs for the role provided
-func GenerateMachineConfigsForRole(config *RenderConfig, role, templateDir string) ([]*mcfgv1.MachineConfig, error) {
+func GenerateMachineConfigsForRole(config *renderconfig.RenderConfig, role, templateDir string) ([]*mcfgv1.MachineConfig, error) {
 	rolePath := role
 	//nolint:goconst
 	if role != workerRole && role != masterRole && role != arbiterRole {
@@ -99,7 +91,7 @@ func GenerateMachineConfigsForRole(config *RenderConfig, role, templateDir strin
 		}
 		name := info.Name()
 		namePath := filepath.Join(path, name)
-		nameConfig, err := generateMachineConfigForName(config, role, name, templateDir, namePath)
+		nameConfig, err := GenerateMachineConfigForName(config, role, name, templateDir, namePath)
 		if err != nil {
 			return nil, err
 		}
@@ -111,7 +103,7 @@ func GenerateMachineConfigsForRole(config *RenderConfig, role, templateDir strin
 
 // renderTemplate renders a template file with values from a RenderConfig
 // returns the rendered file data
-func renderTemplate(config RenderConfig, path string, b []byte) ([]byte, error) {
+func renderTemplate(config *renderconfig.RenderConfig, path string, b []byte) ([]byte, error) {
 	funcs := ctrlcommon.GetTemplateFuncMap()
 	tmpl, err := template.New(path).Funcs(funcs).Parse(string(b))
 	if err != nil {
@@ -126,7 +118,7 @@ func renderTemplate(config RenderConfig, path string, b []byte) ([]byte, error) 
 	return buf.Bytes(), nil
 }
 
-func filterTemplates(toFilter map[string]string, path string, config *RenderConfig) error {
+func filterTemplates(toFilter map[string]string, path string, config *renderconfig.RenderConfig) error {
 	walkFn := func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -147,7 +139,7 @@ func filterTemplates(toFilter map[string]string, path string, config *RenderConf
 		}
 
 		// Render the template file
-		renderedData, err := renderTemplate(*config, path, filedata)
+		renderedData, err := renderTemplate(config, path, filedata)
 		if err != nil {
 			return err
 		}
@@ -189,7 +181,7 @@ func getPaths() []string {
 	return platformBasedPaths
 }
 
-func generateMachineConfigForName(config *RenderConfig, role, name, templateDir, path string) (*mcfgv1.MachineConfig, error) {
+func GenerateMachineConfigForName(config *renderconfig.RenderConfig, role, name, templateDir, path string) (*mcfgv1.MachineConfig, error) {
 	platformDirs := []string{}
 	platformBasedPaths := getPaths()
 	// Loop over templates/common which applies everywhere
