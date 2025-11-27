@@ -37,8 +37,11 @@ import (
 
 	nodeswapv1alpha1 "github.com/openshift-virtualization/swap-operator/api/v1alpha1"
 	"github.com/openshift-virtualization/swap-operator/internal/controller"
+	mcfgv1 "github.com/openshift/api/machineconfiguration/v1"
 	// +kubebuilder:scaffold:imports
 )
+
+var templateDir string
 
 var (
 	scheme   = runtime.NewScheme()
@@ -49,6 +52,8 @@ func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
 	utilruntime.Must(nodeswapv1alpha1.AddToScheme(scheme))
+
+	utilruntime.Must(mcfgv1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -76,6 +81,7 @@ func main() {
 	flag.StringVar(&metricsCertPath, "metrics-cert-path", "",
 		"The directory that contains the metrics server certificate.")
 	flag.StringVar(&metricsCertName, "metrics-cert-name", "tls.crt", "The name of the metrics server certificate file.")
+	flag.StringVar(&templateDir, "template-dir", "/templates", "The directory that contains the templates.")
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
@@ -86,6 +92,12 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	// Validate template directory exists
+	if _, err := os.Stat(templateDir); err != nil {
+		panic(err)
+	}
+	setupLog.Info("validated template directory", "path", templateDir)
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
@@ -179,8 +191,9 @@ func main() {
 	}
 
 	if err := (&controller.NodeSwapReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:      mgr.GetClient(),
+		Scheme:      mgr.GetScheme(),
+		TemplateDir: templateDir, // Add this line
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "NodeSwap")
 		os.Exit(1)

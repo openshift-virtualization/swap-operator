@@ -1,0 +1,13 @@
+apiVersion: node-swap.openshift.io/v1alpha1
+kind: NodeSwap
+metadata:
+  name: swap
+  namespace: default
+spec:
+  machineConfigPoolSelector: "node-role.kubernetes.io/role:worker"
+  swaps:
+    - priority: 10
+      swapType: disk
+      disk:
+        partition:
+          partlabel: swap-partition

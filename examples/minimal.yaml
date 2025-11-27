@@ -1,0 +1,6 @@
+apiVersion: node-swap.openshift.io/v1alpha1
+kind: NodeSwap
+metadata:
+  name: swap
+spec:
+  machineConfigPoolSelector: "node-role.kubernetes.io/role:worker"
