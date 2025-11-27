@@ -11,7 +11,7 @@ $ cd swap-operator
 $ podman login quay.io
 $ export IMG=quay.io/openshift-virtualization/swap-operator:v0.1
 $ make docker-build
-$ make docker-puah
+$ make docker-push
 $ oc create -k config/default
 ```
 ## Cleanup
